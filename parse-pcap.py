@@ -28,7 +28,8 @@ from scapy.layers.radius import Radius
 # read pcap file
 packets = rdpcap(args.pcap_file)
 
-deque_session = deque()
+auth2group = dict({})
+deque_group = deque()
 count_radius_request = dict()
 
 for pkt in packets:
@@ -45,15 +46,32 @@ for pkt in packets:
     if radius_layer.code == 1:
       req_ip = radius_ip.src
       req_sport = radius_udp.sport
-      sess_dict = { "ip": req_ip, "port": req_sport, "radius-id": radius_id, "ftime-request": ftime }
-      sess_dict["auth"] = radius_layer.authenticator.hex()
+      auth = radius_layer.authenticator
+      if auth in auth2group:
+        sess_dict = auth2group[auth]
+        sess_dict["last-time"] = ftime
+        sess_dict["times"].append(ftime)
+      else:
+        sess_dict = {
+          "ip": req_ip,
+          "port": req_sport,
+          "radius-id": radius_id,
+          "auth": auth,
+          "first-time": ftime,
+          "last-time": ftime,
+          "times": list([ftime])
+        }
+        auth2group[auth] = sess_dict
 
       for attr in radius_layer.attributes:
         if attr.name == "Calling-Station-Id" or attr.type == 31:
           str_mac = attr.value.decode("ascii")
 
-          sess_dict["mac"] = str_mac
-          deque_session.append(sess_dict)
+          if "mac" in sess_dict:
+            pass # duplicated request
+          else:
+            sess_dict["mac"] = str_mac
+            deque_group.append(sess_dict)
 
           if str_mac in count_radius_request:
             count_radius_request[str_mac]["count"] += 1
@@ -69,11 +87,11 @@ for pkt in packets:
       rep_ip = radius_ip.dst
       rep_dport = radius_udp.dport
 
-      for dic in reversed(deque_session):
-        if dic["ftime-request"] + 10 < ftime:
-          break
+      for dic in reversed(deque_group):
+        if dic["last-time"] + 10 < ftime:
+          pass
         if dic["ip"] == rep_ip and dic["port"] == rep_dport and dic["radius-id"] == radius_id:
-          dic["ftime-accept"] = ftime
+          dic["accept-time"] = ftime
           break
 
 if args.show_counts:
@@ -84,38 +102,41 @@ if args.show_counts:
           f"last={count_radius_request[str_mac]["last-date"]}"
     )
 elif args.show_sessions:
-  for dict in deque_session:
-    if "ftime-request" in dict and "ftime-accept" in dict:
+  for dict in deque_group:
+    if "first-time" in dict and "accept-time" in dict:
       ip = dict["ip"]
       port = dict["port"]
       rid = dict["radius-id"]
       mac = dict["mac"]
       req = datetime.datetime.fromtimestamp(
-        dict["ftime-request"] ).isoformat().split("T")[1] # .split(".")[0]
+        dict["first-time"] ).isoformat().split("T")[1] # .split(".")[0]
       acc = datetime.datetime.fromtimestamp(
-        dict["ftime-accept"] ).isoformat().split("T")[1] # .split(".")[0]
+        dict["accept-time"] ).isoformat().split("T")[1] # .split(".")[0]
       auth = dict["auth"]
       print(f"ip={ip}, "
             f"port={port}, "
             f"id={rid}, "
             f"mac={mac}, "
-            f"auth={auth}, "
             f"request-time={req}, "
             f"accept-time={acc}"
+            f"auth={auth.hex()}, "
       )
-    elif "ftime-request" in dict:
+    else:
       ip = dict["ip"]
       port = dict["port"]
       rid = dict["radius-id"]
       mac = dict["mac"]
       req = datetime.datetime.fromtimestamp(
-        dict["ftime-request"] ).isoformat().split("T")[1] # .split(".")[0]
+        dict["first-time"] ).isoformat().split("T")[1] # .split(".")[0]
       auth = dict["auth"]
       print(f"ip={ip}, "
             f"port={port}, "
             f"id={rid}, "
             f"mac={mac}, "
-            f"auth={auth}, "
             f"request-time={req}, "
             f"accept-time=<NO_REPLY>"
+            f"auth={auth.hex()}, "
       )
+      for dup_time in dict["times"]:
+        dt = datetime.datetime.fromtimestamp( dup_time ).isoformat().split("T")[1] # .split(".")[0]
+        print(f"\t{dt}")
